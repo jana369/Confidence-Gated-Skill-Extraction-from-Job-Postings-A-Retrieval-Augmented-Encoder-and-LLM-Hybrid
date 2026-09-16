@@ -40,9 +40,9 @@ OPENROUTER_API_KEY=your_key_here
 ## Data
 
 This project uses three publicly available datasets, **not redistributed here**:
-- **SkillSpan**: [link to original source / cite zhang2022skillspan]
-- **Sayfullina**: [link to original source]
-- **Green**: [link to original source]
+- **SkillSpan**: [[link to original source / cite zhang2022skillspan](https://huggingface.co/datasets/jjzha/skillspan)]
+- **Sayfullina**: [[link to original source](https://huggingface.co/datasets/jjzha/sayfullina)]
+- **Green**: [[link to original source](https://huggingface.co/datasets/jjzha/green)]
 
 Download and place raw files under `nnose/data/{skillspan,sayfullina,green}/`. Use `nnose/data/skillspan/conll_to_json.py` (or the equivalent in `src/utils/`) to convert CoNLL format to the JSON format expected by the pipeline.
 
