@@ -29,6 +29,7 @@ from sklearn.metrics import (
     brier_score_loss,
 )
 from sklearn.model_selection import StratifiedKFold, train_test_split
+from seqeval.metrics import classification_report as seq_report
 
 # ============================================================
 # STEP 1: Load and prepare the feature table
@@ -490,6 +491,78 @@ def error_overlap_analysis(test_data_path: str) -> dict:
         "total": int(total),
     }
 
+def evaluate_threshold_baseline(
+    calibrator, test_data_path: str, thresholds=[0.5, 0.6, 0.7, 0.8, 0.9]
+) -> dict:
+    """
+    Simple confidence-threshold baseline: route to Component B when
+    a_max_prob_calibrated < t, otherwise keep Component A.
+    No Random Forest needed -- just a fixed cutoff on Component A's
+    calibrated confidence.
+    """
+    df = load_gate_training_data(test_data_path)
+    df = filter_excluded_tokens(df)
+    df = derive_a_features(df)
+    df = apply_calibration(df, calibrator)
+
+    X = df[df[FEATURE_COLUMNS].notna().all(axis=1)].copy()
+    gold = X["gold_label_str"].tolist()
+    a_only = X["a_prediction"].tolist()
+    b_only = X["b_prediction"].tolist()
+    conf = X["a_max_prob_calibrated"].values
+
+    print("=== THRESHOLD BASELINE (route to B when confidence < t) ===")
+    best_f1 = 0
+    best_t = None
+    best_report = None
+
+    for t in thresholds:
+        hybrid = [
+            a_pred if c >= t else b_pred
+            for a_pred, b_pred, c in zip(a_only, b_only, conf)
+        ]
+        report = classification_report(gold, hybrid, digits=3, output_dict=True)
+        f1 = report["macro avg"]["f1-score"]
+        print(f"  threshold={t:.2f}  macro-F1={f1:.3f}")
+        if f1 > best_f1:
+            best_f1 = f1
+            best_t = t
+            best_report = report
+
+    print(f"\nBest threshold baseline: t={best_t:.2f}  macro-F1={best_f1:.3f}")
+    return best_report
+
+
+def evaluate_threshold_baseline_from_df(
+    X, calibrator, thresholds=[0.5, 0.6, 0.7, 0.8, 0.9]
+) -> dict:
+    """
+    Same as evaluate_threshold_baseline but takes X_holdout directly
+    so we evaluate on the holdout portion only, not the full dev set.
+    """
+    X = apply_calibration(X.copy(), calibrator)
+    X = X[X[FEATURE_COLUMNS].notna().all(axis=1)].copy()
+    gold = X["gold_label_str"].tolist()
+    a_only = X["a_prediction"].tolist()
+    b_only = X["b_prediction"].tolist()
+    conf = X["a_max_prob_calibrated"].values
+
+    print("=== THRESHOLD BASELINE on holdout portion ===")
+    best_f1, best_t, best_report = 0, None, None
+    for t in thresholds:
+        hybrid = [
+            a_pred if c >= t else b_pred
+            for a_pred, b_pred, c in zip(a_only, b_only, conf)
+        ]
+        report = classification_report(gold, hybrid, digits=3, output_dict=True)
+        f1 = report["macro avg"]["f1-score"]
+        print(f"  threshold={t:.2f}  macro-F1={f1:.3f}")
+        if f1 > best_f1:
+            best_f1, best_t, best_report = f1, t, report
+
+    print(f"\nBest: t={best_t:.2f}  macro-F1={best_f1:.3f}")
+    return best_report
+
 
 def gate_routing_analysis(
     model, threshold: float, calibrator, test_data_path: str
@@ -658,9 +731,23 @@ def evaluate_end_to_end_pipeline(
     ]
 
     def score(predictions, name):
+        # token-level report (existing)
         report = classification_report(gold, predictions, digits=3, output_dict=True)
-        print(f"\n=== {name} ===")
+        print(f"\n=== {name} (token-level) ===")
         print(classification_report(gold, predictions, digits=3))
+
+        # span-level report (new)
+        # group tokens back into sentences by skillspan_row
+        sentences_gold = []
+        sentences_pred = []
+        for row_id, group in X.groupby("skillspan_row"):
+            idx = group.index
+            sentences_gold.append([gold[X.index.get_loc(i)] for i in idx])
+            sentences_pred.append([predictions[X.index.get_loc(i)] for i in idx])
+
+        print(f"\n=== {name} (span-level, seqeval) ===")
+        print(seq_report(sentences_gold, sentences_pred, digits=3))
+
         return report
 
     print(f"Evaluating on {len(X)} test tokens\n")
@@ -710,7 +797,7 @@ def main():
         train_final_gate(X, y)
     )
     print(f"Feature importances: {dict(zip(FEATURE_COLUMNS, feature_importance))}")
-
+    evaluate_threshold_baseline_from_df(X_holdout, calibrator)
     print("\n############################################")
     print("# Step 2b: Calibration check (before/after) + PR curve")
     print("############################################")
@@ -746,12 +833,28 @@ if __name__ == "__main__":
     print("\n############################################")
     print("# [TEST, HELD-OUT -- THIS IS THE REAL NUMBER]")
     print("############################################")
-    model, threshold, calibrator = load_gate("trained_gate.joblib")
-    evaluate_end_to_end_pipeline(
-        model, threshold, calibrator, "gate_labeled_TEST.jsonl"
+    model, threshold, calibrator = load_gate(
+        "D:\\conference\\jobBERTa\\nnose\\trained_gate.joblib"
     )
-    print(error_overlap_analysis("gate_labeled_TEST.jsonl"))
-    print(oracle_analysis("gate_labeled_TEST.jsonl"))
+    evaluate_end_to_end_pipeline(
+        model, threshold, calibrator, 
+        "D:\\conference\\jobBERTa\\nnose\\gate_labeled_TEST.jsonl"
+    )
+    evaluate_threshold_baseline(
+        calibrator, 
+        "D:\\conference\\jobBERTa\\nnose\\gate_labeled_TEST.jsonl"
+    )
     print(
-        gate_routing_analysis(model, threshold, calibrator, "gate_labeled_TEST.jsonl")
+        error_overlap_analysis(
+            "D:\\conference\\jobBERTa\\nnose\\gate_labeled_TEST.jsonl"
+        )
+    )
+    print(oracle_analysis("D:\\conference\\jobBERTa\\nnose\\gate_labeled_TEST.jsonl"))
+    print(
+        gate_routing_analysis(
+            model,
+            threshold,
+            calibrator,
+            "D:\\conference\\jobBERTa\\nnose\\gate_labeled_TEST.jsonl",
+        )
     )
